@@ -1,5 +1,4 @@
 import cv2
-import torch
 import time
 import threading
 import os
@@ -18,16 +17,34 @@ lock = threading.Lock()  # 🔒 스레드 동기화 (녹화 충돌 방지)
 RECORDINGS_DIR = "recordings"
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
-def get_next_video_filename():
-    """🎥 recordings 폴더에서 다음 저장할 파일 번호 찾기"""
-    files = [f for f in os.listdir(RECORDINGS_DIR) if f.endswith(".mp4")]
-    numbers = sorted([int(f.split(".")[0]) for f in files if f.split(".")[0].isdigit()])
-    next_number = numbers[-1] + 1 if numbers else 0
-    return os.path.join(RECORDINGS_DIR, f"{next_number}.mp4")
+def get_available_cameras():
+    """ 🔍 사용 가능한 카메라 목록 반환 """
+    available_cameras = []
+    index = 0
+    while True:
+        cap = cv2.VideoCapture(index)
+        if not cap.isOpened():
+            break
+        available_cameras.append(f"CAM{index+1}")
+        cap.release()
+        index += 1
+
+    return available_cameras
+
+def generate_video_filename(phone, zip_code, cam_name):
+    """ 🎥 사용자 정보 기반 녹화 파일명 생성 """
+    base_filename = f"{phone}_{zip_code}_{cam_name}"
+    index = 0
+    while True:
+        video_filename = f"{base_filename}_{index}.mp4"
+        video_path = os.path.join(RECORDINGS_DIR, video_filename)
+        if not os.path.exists(video_path):
+            return video_path
+        index += 1  # 파일이 존재하면 다음 번호 사용
 
 def detect_people(frame):
-    """ YOLOv5를 사용하여 사람 감지 """
-    results = model(frame)  # YOLOv5 실행
+    """ 🎯 YOLOv5를 사용하여 사람 감지 """
+    results = model(frame)
     detected = False
 
     for result in results:
@@ -40,65 +57,96 @@ def detect_people(frame):
 
     return detected
 
-def start_recording(cap, camera_index):
-    """ ✅ 5초 동안 녹화된 영상 저장 """
-    global recording, video_paths
+def start_recording_with_metadata(camera_index, phone, zip_code, cam_name):
+    """✅ 사용자 정보 기반으로 5초 동안 녹화된 영상 저장"""
+    global recording
 
-    if recording.get(camera_index, False):
-        return  # 이미 녹화 중이면 중복 실행 방지
+    if recording.get(cam_name, False):
+        print(f"⏳ 이미 녹화 중: {cam_name}")
+        return
 
-    recording[camera_index] = True  # 녹화 시작
-    video_filename = get_next_video_filename()
+    # ✅ OpenCV로 카메라 열기 (webcam_service에서 관리)
+    cap = cv2.VideoCapture(camera_index)
+    if not cap.isOpened():
+        print(f"❌ 카메라를 열 수 없음: {cam_name}")
+        return
+
+    recording[cam_name] = True  # ✅ 녹화 시작
+
+    video_path = generate_video_filename(phone, zip_code, cam_name)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(video_filename, fourcc, 20.0, (640, 480))
-    video_paths[camera_index] = video_filename  # 녹화된 영상 경로 저장
+    out = cv2.VideoWriter(video_path, fourcc, 20.0, (640, 480))
+
+    print(f"📌 녹화 정보: {phone}, {zip_code}, {cam_name}")
+    print(f"📌 저장될 파일명: {video_path}")
 
     start_time = time.time()
     while time.time() - start_time < 5:
         success, frame = cap.read()
         if not success:
             break
-        out.write(frame)  # ✅ 지속적으로 프레임 추가
+        out.write(frame)
 
     out.release()
-    recording[camera_index] = False  # 녹화 종료
-    print(f"🎥 녹화 완료: {video_filename}")
+    cap.release()  # ✅ 카메라 종료
+    recording[cam_name] = False  # ✅ 녹화 종료
+    print(f"🎥 녹화 완료: {video_path}")
 
-def get_available_cameras():
-    """ 사용 가능한 카메라 목록 반환 """
-    available_cameras = []
-    index = 0
-    while True:
-        cap = cv2.VideoCapture(index, cv2.CAP_ANY)
-        if not cap.isOpened():
-            break
-        available_cameras.append(f"CAM{index+1}")
-        print(f"✅ 카메라 감지됨! {available_cameras[-1]}")
-        cap.release()
-        index += 1
 
-    return available_cameras if available_cameras else ["CAM1"]  # ✅ 기본값 반환
+def generate_frames(camera="CAM1"):
+    """ 📹 실시간 스트리밍 + YOLOv5 감지 + 녹화 """
+    
+    # 1️⃣ **카메라 유효성 검증 (get_available_cameras)**
+    available_cameras = get_available_cameras()
+    if not available_cameras:
+        print("❌ 사용 가능한 카메라가 없습니다!")
+        return
 
-def generate_frames(camera_index=0):
-    """ 📹 실시간 스트리밍 (카메라 유지) + YOLOv5 감지 + 녹화 """
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_ANY)
+    # 2️⃣ **올바른 카메라 인덱스 변환**
+    if not camera or camera in ["null", "None", ""]:
+        camera = available_cameras[0]  # 기본값으로 첫 번째 카메라 선택
 
+    try:
+        if isinstance(camera, int):
+            camera_index = camera
+        elif isinstance(camera, str) and "CAM" in camera:
+            camera_index = int(camera.replace("CAM", "")) - 1
+        else:
+            print(f"❌ 잘못된 카메라 값: {camera}")
+            return
+
+    except ValueError as e:
+        print(f"❌ 카메라 인덱스 변환 오류: {e}")
+        return
+
+    # 3️⃣ **카메라 정상 작동 여부 확인**
+    cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
-        print(f"❌ 스트리밍용 카메라를 열 수 없음: CAM{camera_index+1}")
+        print(f"❌ 카메라를 열 수 없음: {camera}")
         return
 
     try:
         while cap.isOpened():
             success, frame = cap.read()
             if not success:
-                print(f"❌ 프레임을 가져오지 못함: CAM{camera_index+1}")
                 break
 
             # ✅ YOLOv5를 적용하여 사람 감지
             try:
                 if detect_people(frame):
-                    alerts.add(f"CAM{camera_index+1}")  # 🚨 감지된 카메라 추가
-                    threading.Thread(target=start_recording, args=(cap, camera_index)).start()  # 🎥 녹화 시작
+                    alerts.add(camera)
+
+                    # ✅ 현재 녹화 중이 아니라면 녹화 시작
+                    if not recording.get(camera, False):
+                        phone = "default"
+                        zip_code = "00000"
+                        cam_name = camera
+
+                        # ✅ 녹화 시작 전 정보 출력
+                        print(f"📌 녹화 정보: {phone}, {zip_code}, {cam_name}")
+
+                        threading.Thread(target=start_recording_with_metadata, args=(camera_index, phone, zip_code, cam_name)).start()
+            
             except Exception as e:
                 print(f"❌ YOLO 감지 중 오류 발생: {e}")
 
@@ -113,15 +161,13 @@ def generate_frames(camera_index=0):
 
     finally:
         cap.release()
-        print(f"🔴 스트리밍 종료: CAM{camera_index+1}")
+        print(f"🔴 스트리밍 종료: {camera}")
 
 def get_video_path(camera_index):
     """ 🚨 녹화된 비디오 경로 반환 """
     if camera_index in video_paths and os.path.exists(video_paths[camera_index]):
-        print(f"✅ 녹화된 영상 반환: {video_paths[camera_index]}")
         return FileResponse(video_paths[camera_index], media_type="video/mp4")
     else:
-        print(f"❌ 녹화된 비디오 없음: CAM{camera_index+1}")
         return JSONResponse({"error": "녹화된 비디오 없음"}, status_code=404)
 
 def get_alerts():
