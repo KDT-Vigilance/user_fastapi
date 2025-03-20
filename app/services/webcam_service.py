@@ -42,7 +42,14 @@ def upload_to_s3(file_path, camera_index):
         # 🔹 S3 업로드 (비동기 처리 X → 바로 실행)
         with open(file_path, "rb") as file:
             s3_client.upload_fileobj(
-                file, config.BUCKET_NAME, s3_key, ExtraArgs={'ACL': 'public-read'}
+                file,
+                config.BUCKET_NAME,
+                s3_key,
+                ExtraArgs={
+                    'ACL': 'public-read',
+                    'ContentDisposition': 'inline',  # ✅ 이 부분 추가 (자동 다운로드 방지)
+                    'ContentType': 'video/mp4'  # ✅ 파일 타입 명시 (MP4 영상)
+                }
             )
 
         # ✅ S3 URL 생성 후 저장
