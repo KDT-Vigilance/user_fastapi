@@ -74,7 +74,7 @@ def start_recording(cap, camera_index):
         return
     recording[camera_index] = True
     video_filename = get_next_video_filename()
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"H264")
     out = cv2.VideoWriter(video_filename, fourcc, 20.0, (640, 480))
 
     start_time = time.time()
