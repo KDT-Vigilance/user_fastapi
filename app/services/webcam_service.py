@@ -139,12 +139,7 @@ def detect_people(frame, camera_index):
 def save_video(frames, filename):
     print("📏 save_video() 실행중!")
 
-    if USE_VIDEO_FILE:
-        fourcc = cv2.VideoWriter_fourcc(*"H264")
-    else:
-        fourcc = cv2.VideoWriter_fourcc(*"H264")
-
-    # 🔍 첫 프레임 사이즈 확인
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # ✅ 안정적 코덱
     if len(frames) == 0:
         print("❌ 저장할 프레임이 없습니다.")
         return
@@ -152,85 +147,61 @@ def save_video(frames, filename):
     h, w = frames[0].shape[:2]
     print(f"🖼 저장할 영상 크기: {w}x{h}, 총 {len(frames)} 프레임")
 
-    out = cv2.VideoWriter(filename, fourcc, 15, (w, h))  # ⬅️ 여기서 고정된 (640, 480) 말고 실제 크기로
-    print('len(frames)길이 : @@@@@ - ',len(frames))
+    out = cv2.VideoWriter(filename, fourcc, 15, (w, h))
     for i, frame in enumerate(frames):
-        if frame.shape[:2] != (h, w):
-            print(f"⚠️ 프레임 {i} 크기 불일치: {frame.shape}")
         out.write(frame)
     out.release()
-
 
 def analyze_buffers(original_fps, camera_index):
     global buffer_full_printed, last_upload_time
 
     now = time.time()
 
-    # 💡 업로드 쿨타임 확인
     last_upload = last_upload_time.get(camera_index, 0)
     if now - last_upload < UPLOAD_COOLDOWN:
         return
 
-    # 🔍 각 버퍼 상태 확인
     for buffer_id in [0, 1, 2]:
         key = (camera_index, buffer_id)
-        buffer_len = len(frame_buffers.get(key, []))
+        buffer_frames = list(frame_buffers.get(key, []))
 
-        if buffer_len >= 16 and not buffer_full_printed.get(key, False):
-            print(f"✅ {key} 버퍼가 다 찼어요!")
+        # ✅ CNN 분석 조건: 프레임이 45개 다 차야 함
+        if len(buffer_frames) < 45:
+            continue
+
+        # ✅ 디버깅용: 버퍼 꽉 찼을 때 1회 출력
+        if not buffer_full_printed.get(key, False):
+            print(f"✅ {key} 버퍼가 다 찼어요! CNN 분석 시작")
             buffer_full_printed[key] = True
-        elif buffer_len < 16:
-            buffer_full_printed[key] = False
-
-     # 📌 CNN 분석은 buffer 1 기준
-    key = (camera_index, 1)
-    buffer_frames = list(frame_buffers.get(key, []))
-    if len(buffer_frames) < 16:
-        return
-
-    # CNN에는 샘플만 넣는다
-    clip_for_cnn = sample_16_frames(buffer_frames)
-    if len(clip_for_cnn) < 16:
-        return
-
-    input_tensor = preprocess_frames(clip_for_cnn)
-    with torch.no_grad():
-        output = cnn_model(input_tensor)
-    pred = torch.argmax(output, dim=1).item()
-
-    print(f"🧠 CNN 추론 결과: {pred}")
-    if pred == 1:
-        # 🎯 감지 시점 판단 (중앙 프레임 기준)
-        detection_index = 8
-        if detection_index < 5:
-            buffers_to_save = [0, 1]
-        elif detection_index > 11:
-            buffers_to_save = [1, 2]
         else:
-            buffers_to_save = [1]
+            continue  # 이미 처리된 버퍼는 스킵
 
-        # ⚠️ 저장은 전체 버퍼 프레임 사용
-        combined_frames = []
-        for bid in buffers_to_save:
-            k = (camera_index, bid)
-            buffer_frames_full = list(frame_buffers.get(k, []))
-            combined_frames.extend(buffer_frames_full)
+        # 🎯 CNN 분석용 16프레임 샘플링
+        clip_for_cnn = sample_16_frames(buffer_frames)
+        if len(clip_for_cnn) < 16:
+            continue
 
-        filename = get_next_video_filename()
-        save_video(combined_frames, filename)
-        upload_to_s3(filename, camera_index)
+        input_tensor = preprocess_frames(clip_for_cnn)
+        with torch.no_grad():
+            output = cnn_model(input_tensor)
+        pred = torch.argmax(output, dim=1).item()
 
-        alerts.add(f"CAM{camera_index+1}")
-        last_detection_time[camera_index] = now
-        last_upload_time[camera_index] = now
-        print(f"🚨 폭력 감지: CAM{camera_index+1} - 저장된 버퍼: {buffers_to_save}")
+        print(f"🧠 CNN 결과: buffer{buffer_id} → pred={pred}")
+        if pred == 1:
+            print(f"🚨 폭력 감지! buffer{buffer_id} 전체 저장")
 
+            filename = get_next_video_filename()
+            save_video(buffer_frames, filename)
+            upload_to_s3(filename, camera_index)
 
+            alerts.add(f"CAM{camera_index+1}")
+            last_detection_time[camera_index] = now
+            last_upload_time[camera_index] = now
 
 def background_analyzer():
     print("🧵 background_analyzer() 백그라운드 분석 시작!")
     step = 2
-    buffer_duration = 3
+    buffer_duration = 5
     fps_assumed = 15
     buffer_ids = [0, 1, 2]
     for cam in range(5):
@@ -272,10 +243,10 @@ def process_video_stream(camera_index=0):
         cap = cv2.VideoCapture(source, cv2.CAP_ANY)
 
     if not cap.isOpened():
-        print("❌ 비디오 캐프 열기 실패!")
+        print("❌ 비디오 열기 실패!")
         return
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 20
+    fps = cap.get(cv2.CAP_PROP_FPS) or 15
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -288,9 +259,12 @@ def process_video_stream(camera_index=0):
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
 
-        time.sleep(1 / fps if fps > 0 else 1 / 15)
+        # ✅ 영상 파일일 때는 빠르게 처리 (sleep 제거)
+        if not USE_VIDEO_FILE:
+            time.sleep(1 / fps if fps > 0 else 1 / 15)
 
     cap.release()
+
 
 def get_latest_video_url():
     print("🔗 get_latest_video_url() 실행중!")
