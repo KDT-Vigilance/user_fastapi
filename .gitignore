@@ -9,6 +9,7 @@ test.py
 webcam.py
 
 yolov5su.pt
+yolov8n.pt
 
 # dotenv environment variable files
 .env

@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from app.services.webcam_service import (
-    get_available_cameras, 
-    generate_frames, 
-    get_latest_video_url, 
+    get_available_cameras,
+    process_video_stream as generate_frames,
+    get_latest_video_url,
     get_alerts
 )
 

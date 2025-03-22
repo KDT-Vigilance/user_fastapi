@@ -1,27 +1,39 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.routes.webcam_routes import router as webcam_router
 from app.routes.alert_routes import router as alert_router
-from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import threading
 import logging
+
+from app.services.webcam_service import background_analyzer  # 백그라운드 함수 import 필요!
 
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI()
+# ✅ lifespan 먼저 정의!
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("💡 background_analyzer 실행 시작")
+    threading.Thread(target=background_analyzer, daemon=True).start()
+    yield
 
-# CORS 설정 (보안 강화 가능)
+# ✅ 그 다음에 FastAPI 선언
+app = FastAPI(lifespan=lifespan)
+
+# 🔐 CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 보안이 필요하면 특정 도메인으로 제한
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 🚀 라우터 등록 (경로 일관성 유지)
+# 🚀 라우터 등록
 app.include_router(webcam_router, prefix="/video", tags=["Webcam"])
 app.include_router(alert_router, prefix="/alerts", tags=["Alerts"])
 
-# 🏠 기본 엔드포인트 (FastAPI 정상 실행 확인용)
+# 🏠 기본 확인용 엔드포인트
 @app.get("/")
 def read_root():
     return {"message": "User FastAPI is running!"}
