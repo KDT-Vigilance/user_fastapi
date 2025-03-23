@@ -1,10 +1,12 @@
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from app.services.webcam_service import (
     get_available_cameras,
     process_video_stream as generate_frames,
     get_latest_video_url,
-    get_alerts
+    get_alerts,
+    USE_VIDEO_FILE,
+    VIDEO_FILE_PATH  # 영상 경로도 가져와야 함
 )
 
 router = APIRouter()
@@ -16,14 +18,25 @@ def list_cameras():
 
 @router.get("/video_feed")
 async def video_feed(camera: str = "CAM1"):
-    """✅ 실시간 웹캠 스트리밍"""
+    from app.services.webcam_service import camera_mapping
+
+    if USE_VIDEO_FILE:
+        return StreamingResponse(generate_frames(0), media_type="multipart/x-mixed-replace; boundary=frame")
+
     available_cameras = get_available_cameras()
     if camera not in available_cameras:
-        print(f"⚠️ 카메라 {camera}가 없음 → 기본값 CAM1 사용")
+        print(f"⚠️ 카메라 {camera} 없음 → 기본값 CAM1 사용")
         camera = "CAM1"
 
-    camera_index = int(camera.replace("CAM", "")) - 1
+    # ✅ camera_mapping 활용
+    camera_index = camera_mapping.get(camera, 0)
     return StreamingResponse(generate_frames(camera_index), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@router.get("/video_mode")
+def get_video_mode():
+    """✅ 현재 실행 모드 반환 (프론트에서 video / img 선택용)"""
+    return {"USE_VIDEO_FILE": USE_VIDEO_FILE}
 
 @router.get("/latest_video")
 async def fetch_latest_video():
@@ -34,3 +47,8 @@ async def fetch_latest_video():
 def get_alert_list():
     """🚨 감지된 카메라 목록 반환"""
     return get_alerts()
+
+@router.get("/mode")
+def get_streaming_mode():
+    """✅ 현재 스트리밍 모드 반환"""
+    return {"use_video_file": USE_VIDEO_FILE}
